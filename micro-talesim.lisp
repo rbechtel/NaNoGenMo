@@ -39,9 +39,10 @@
 ;;; You'll want to load both this and micro-mumble.lisp before trying to
 ;;; run anything.
 
-(in-package "NNGM")
+; (in-package "NNGM") ; removed for development/debug 151108
 
 ;  Standard definition of put.
+
 (defmacro put (x y z)
   `(setf (get ,x ,y) ,z))
 
@@ -122,6 +123,7 @@
 
 (defun init-world ()
   (setf *personae* '(joe irving louise))
+  (setf *deceased* nil)
   (setf *goals* '(hungry thirsty))
   (setf *all-locations* '(cave oak-tree elm-tree pine-tree ground river valley))
   (setf *all-objects* (append *all-locations* 
@@ -197,6 +199,8 @@
 ;; 151025 Let's generalize over the top-level calls
 ;;   If you give it a story, it works like micro-talespin-demo
 ;;   If you don't give it a story, it works like micro-talespin
+;; 151101 Changed to do random-choice in place of pick-one so it's
+;;   entirely automated rather than being interactive 
 
 (defun spin-tale (&optional story keep-sequence)
   (let (main-character problem)
@@ -204,18 +208,27 @@
     (init-facts story) ; if no story, just does basic facts
     (say "~%Once upon a time ...") ; originally (format t "~%Once upon a time ...")
     (init-world)
-    (setf main-character (if story (first story) (pick-one 'character *personae*)))
-    (setf problem (if story (second story) (pick-one 'character *goals*)))
+    (setf main-character (if story
+                             (if (first story) (first story) (random-choice *personae*))
+                           (random-choice *personae*)))
+    (setf problem (if story 
+                      (if (second story) (second story) (random-choice *goals*))
+                    (random-choice *goals*)))
     (say "~%One day, ") ; originally (format t "~%One day, ")
     (assert-fact (mloc 'world (state main-character problem 'pos)))
     (say "~%The end.") ; originally (format t "~%The end.")
     (recite keep-sequence)))
 
 ;  pick-one is used to get the character and problem from the terminal.
+
 (defun pick-one (name l)
   (format t "~%Choose a ~s from this list:~%~s~%> " name l)
   (let ((a (read)))
     (if (member a l) a (pick-one name l))))
+
+; Pick an item at random from a list
+
+(defun random-choice (list) (nth (random (length list)) list))
 
 ;  goal evaluator: executes each plan until one works and the goal
 ;  can be removed, or until none do and the character fails to get the
@@ -224,16 +237,24 @@
 ;  then he's in a loop and has failed.  Otherwise, set up the goal and go.
 
 (defun goal-eval (actor goal plans)
-  (cond ((knows actor goal) t)
-        ((has-goal-of actor goal) nil)
-        (t
-         (gets-new-goal-of actor goal)
-         (cond ((run-plans plans)
-                (forgets-goal-of actor goal)
+  (cond ((knows actor goal) t)                 ; already succeeded
+        ((has-goal-of actor goal) nil)         ; already had the goal (fail)
+        (t                                     ; otherwise
+         (gets-new-goal-of actor goal)           ; add to goal list
+         (cond ((run-plans plans)                ; if any plan works
+                (forgets-goal-of actor goal)     ; forget the goal and succeed
                 t)
-               (t
-                (now-knows actor (negate (future goal)) t)
+               (t                                ; otherwise
+                (now-knows actor (negate (future goal)) t) ; realize you're not going to succeed, fail
                 nil)))))
+
+;; 151121 This is where some things probably need to change. As soon as you add a goal,
+;; you (apparently) start working on it. But you only work on one plan at a time - you
+;; don't seem to be able to detect that another plan you have has had its preconditions
+;; satisfied unexpectedly, so you could switch to that plan to achieve your current goal.
+;; Similarly, you don't seem to be able to figure out that you could use a plan for
+;; another goal immediately (e.g., drinking as soon as you get to the river, even though
+;; you're currently working on your hunger).
 
 (defun run-plans (plans)
   (let ((plan (car plans)))
@@ -245,196 +266,11 @@
 ;  gen-plans replicates the same plan with different objects
 ;  e.g., trying to get any one of the several foods with the
 ;  same bargaining plan.
+
 (defun gen-plans (var possibilities plan-form)
   (mapcar #'(lambda (possibility)
              (subst possibility var plan-form))
         possibilities))
-
-;; Hmm. Are these planboxes, in the sense of precondition+action sequence?
-;; They're bundled as AND (presumably so you blow out if anything doesn't
-;; work), but it looks like you can't separate the test and the execution.
-;; And where do you decide which plan to use (or maybe there's just a fixed
-;; order)?
-;;
-;; Notice a weakness in bundling - both ask-plan and bargain-plan begin
-;; by testing (not (relate ',actor ',agent ',actor 'deceive)) - so if
-;; you try ask first and fail on that, there's no point in trying bargain.
-;;
-;; This also means that if we want to include the character's reasoning
-;; process in the *story-sequence* we'll have to SAY things about the
-;; tests in these plan functions. E.g., if the character attempts ASK-PLAN
-;; we want them to SAY "Actor believed that agent would not deceive actor."
-;; and "Actor believed that actor liked agent." before we get to "Actor
-;; asked agent if agent would do action."
-;;
-;; Looks like we could maybe do the SAY within RELATE, KNOWS, HAS-GOAL-OF,
-;; DCONT, DPROX, etc. Might need to add a negation flag to these functions.
-;; (So instead of testing (not (relate ....)) you would test (relate ... 'not)
-
-;  Two S-goals (satisfaction) -- thirst and hunger:
-
-;  To satisfy thirst, go to some water and drink it.
-(defun sthirst (actor)
-  (goal-eval actor 
-             (state actor 'thirsty 'neg)
-             (list (sthirst-plan actor))))
-
-(defun sthirst-plan (actor)
-  `(and (dprox ',actor ',actor 'water)
-        (doit (ingest ',actor 'water))))
-
-;  To satisfy hunger, get some food and eat it.
-(defun shunger (actor)
-  (goal-eval actor 
-             (state actor 'hungry 'neg)
-             (gen-plans 'food
-                        (get-isa 'food actor)
-                        (shunger-plan actor))))
-
-(defun shunger-plan (actor)
-  `(and (dcont ',actor 'food)
-        (doit (ingest ',actor 'food))))
-
-;  Three D-goals (delta - instrumental and use plans for accomplishment)
-;  -- dcont, dknow, dprox:
-
-;  To get an object: if you know someone has it, persuade them to
-;  give it to you; otherwise try to find out where the object is,
-;  go there and take it.
-(defun dcont (actor object)
-  (let ((owner (knows-owner actor object)))
-    (goal-eval actor 
-               (has actor object)
-               (if owner 
-                 (list (dcont-plan1 actor object owner))
-                 (list (dcont-plan2 actor object))))))
-
-(defun dcont-plan1 (actor object owner)
-  `(persuade ',actor 
-             ',owner 
-             (atrans ',owner ',object ',actor ',owner)))
-
-(defun dcont-plan2 (actor object)
-  `(and (dknow ',actor (where-is ',object))
-        (dprox ',actor ',actor ',object)
-        (doit (atrans ',actor ',object ',actor nil))))
-
-;  To find out something: find a friend to tell you
-(defun dknow (actor info)
-  (goal-eval actor
-             (mloc actor info)
-             (gen-plans 'agent
-                        (remove actor *personae*)
-                        (dknow-plan actor info))))
-
-(defun dknow-plan (actor info)
-  `(and (knows-loc ',actor 'agent)
-        (or (is-friend-of 'agent ',actor)
-            (not (relate ',actor 'agent ',actor 'dominate)))
-        (persuade ',actor
-                  'agent
-                  (mtrans 'agent ',info ',actor 'agent)))) 
-
-;  To move an object (including yourself) to where some other
-;  person or object is: get the first object (if not yourself), then
-;  find out where the second object is and go there with the first
-;  object.  If this doesn't work, try persuading the object to go
-;  there itself.
-(defun dprox (actor object new-object)
-  (goal-eval actor 
-             (is-at object new-object)
-             (list (dprox-plan1 actor object new-object)
-                   (dprox-plan2 actor object new-object))))
-
-(defun dprox-plan1 (actor object new-object)
-  `(and (or (equal ',actor ',object)
-            (dprox ',actor ',actor ',object))
-        (dknow ',actor (where-is ',new-object))
-        (or (equal ',actor ',object)
-            (doit (grasp ',actor ',object)))
-        (or (is-prox ',actor (loc-name-of ',new-object))
-            (doit (ptrans ',actor
-                          ',object
-                          (knows-loc ',actor ',new-object)
-                          (knows-loc ',actor ',actor))))
-        (or (equal ',actor ',object)
-            (doit (un-grasp ',actor ',object)))))
-
-(defun dprox-plan2 (actor object new-object)
-  `(and (not (equal ',actor ',object))
-        (member ',object *personae*)
-        (peruade ',actor
-                 ',object
-                 (ptrans ',object
-                         ',object
-                         ',new-object
-                         (loc-name-of ',object))
-                 goal)))
-
-;  Subgoals and plans -- persuade, ask, bargain, threaten, and tell:
-
-;  You can persuade someone to do something by either asking them,
-;  giving them food or threatening them.
-(defun persuade (actor agent action)
-  (goal-eval actor 
-             action
-             (append (gen-plans 'food 
-                                (get-isa 'food agent) 
-                                (bargain-plan actor agent action))
-                     (list (ask-plan actor agent action))
-                     (list (threat-plan actor agent action)))))
-
-;  The success of asking something depends upon whether the other person
-;  is honest and likes you.
-(defun ask-plan (actor agent action)
-  `(and (not (relate ',actor ',agent ',actor 'deceive))
-        (relate ',actor ',actor ',agent 'like)
-        (tell ',actor ',agent (question ',action))
-        ;(is-true ',result)
-        ))
-
-;  The success of bargaining with someone by giving them food depends
-;  on whether the other person is honest, you don't already have the
-;  goal of getting the food you're going to bargain with, and you can
-;  get the food to the other person.
-(defun bargain-plan (actor agent action)
-  (let ((atrans-food (atrans actor 'food agent actor)))
-    `(and (not (relate ',actor ',agent ',actor 'deceive))
-          (not (knows ',actor (has ',agent 'food)))
-          (not (has-goal-of ',actor (has ',actor 'food)))
-          (doit (mbuild ',actor (cause ',atrans-food (maybe ',action))))
-          (tell ',actor 
-                ',agent 
-                (question (cause ',atrans-food (future ',action))))
-          (dcont ',actor 'food)
-          (dprox ',actor ',actor ',agent)
-          (doit ',atrans-food)
-          (is-true ',action))))
-
-;  The success of threatening depends upon whether you dominate
-;  the other person.
-(defun threat-plan (actor agent action)
-  `(and (not (relate ',actor ',agent ',actor 'dominate));  knows(knower,fact) returns fact if fact is in data base for knower:
-;  -- if fact = knows(knower,subfact), assume everyone knows what they
-;     know and look up subfact,
-;  -- if fact has a ?unspec, then return the filler that replaces
-;    the ?unspec in the data base.
-        (tell ',actor 
-              ',agent 
-              (cause (negate ',action) (future (propel ',actor 'hand ',agent))))
-        (or (is-true ',action)
-            (and (doit (propel ',actor 'hand ',agent))
-                 (is-true ',action)))))
-
-;  To tell someone something, go there and say it.
-(defun tell (actor agent info)
-  (goal-eval actor 
-             (mloc agent info)
-             (list (tell-plan actor agent info))))
-
-(defun tell-plan (actor agent info)
-  `(and (dprox ',actor ',actor ',agent)
-        (doit (mtrans ',actor ',info ',agent ',actor))))
 
 ;  The simulator
 
@@ -442,6 +278,7 @@
 ;  assert-fact.  mtranses with '?unspecified have to be filled out, as in
 ;  "Irving told Joe where the honey was" -- the "where" being represented
 ;  in the CD with an '?unspecified form.
+
 (defun doit (cd)
   (let ((newcd 
          (if (and (equal (header-cd cd) 'mtrans)
@@ -461,10 +298,33 @@
 ;  (e.g., ptrans changes locs), new states may lead to response actions
 ;  (put in *actions*) or new plans (put in *plans*).  The plans are
 ;  done after all the consequences are inferred.
-(defun assert-fact (x)
+;
+; 151122 Grumble. *plans* aren't actually plans, they're goals. Currently
+; the only things that would wind up in *plans* are (SHUNGER ...) or
+; (STHIRST ...). All other goals are instrumental to those. (Of course,
+; this is MTS and only illustrates using fable-like activities - could
+; probably extend per A&O to add things like E-goals, etc.
+
+;(defun assert-fact (x)
+;  (setf *actions* nil)
+;  (setf *plans* nil)
+;  (forward-chain (list x))
+;  (mapc #'(lambda (cd) (doit (setrole 'time *default-tense* cd)))
+;        *actions*)
+;  (mapc #'eval *plans*))
+
+;; 151121 Variant on assert-fact that takes a list of facts as input
+;; rather than a single fact. Only change is that call to forward-chain
+;; doesn't need to wrap the (no longer single) input in a list
+;; Hmm. Maybe this could just be a simple direct replacement for
+;; assert-fact - if you give it a single fact, it will wrap it
+;; for you, but you can also give it multiple facts. Try it.
+;; Woot! works fine.
+
+(defun assert-fact (&rest facts)
   (setf *actions* nil)
   (setf *plans* nil)
-  (forward-chain (list x))
+  (forward-chain facts)
   (mapc #'(lambda (cd) (doit (setrole 'time *default-tense* cd)))
         *actions*)
   (mapc #'eval *plans*))
@@ -472,13 +332,14 @@
 (defun forward-chain (l)
   (setf *conseqs* nil)
   (mapc #'(lambda (i) 
-            (now-knows 'world i nil)
+            (now-knows 'world i t) ; 151121 - changing last arg from nil to T to get it into *story-sequence*
             (conseqs i))
         l)
   (if *conseqs* (forward-chain *conseqs*)))
 
 ;  Each act and state is associated with a function for 
 ;  calculating the consequences.
+
 (defun conseqs (cd)
   (case (header-cd cd)
     (atrans (atrans-conseqs cd))
@@ -494,6 +355,7 @@
     (t nil)))
  
 ;  add-conseq adds and returns a CD to the list of consequences
+
 (defun add-conseq (x)
   (push x *conseqs*)
   x)
@@ -501,6 +363,7 @@
 ;  Consequences of an atrans: everyone in the area notices it and the
 ;  resulting change of possesion, the object changes locations, and the
 ;  from filler knows he no longer has it.
+
 (defun atrans-conseqs (cd)
   (notice (cdpath '(actor) cd) 
           cd)
@@ -517,7 +380,9 @@
 ;  Consequences of a grasp: everyone knows that the actor either has or
 ;  (in the case of a tf (transition final or the end of an action) of the
 ;  grasp)  doesn't have the object
+
 (defun grasp-conseqs (cd)
+  (notice (cdpath '(actor) cd) cd) ; everyone in the area knows about the action
   (notice (cdpath '(actor) cd)
           (add-conseq (if (in-mode cd 'tf)
                         (negate (has (cdpath '(actor) cd)
@@ -527,20 +392,39 @@
 
 ;  Consequences of an ingest: everyone knows that the actor 
 ;  is no longer hungry or thirsty.
+; 151129 The thing ingested should no longer exist - so it shouldn't
+; be (LOC (ACTOR food) (VAL eater)) or (CONT (ACTOR food) (VAL eater))
+; Arguably, it should cease to exist altogether - there should be 
+; no more (LOC (ACTOR food) (VAL don't-care)) or
+; (CONT (ACTOR food) (VAL don't-care)).
+;  Easiest way to deal with renewable food is to just clear the LOC
+; and CONT that deal with eater.
+;  Particularly nasty because you have to tweak the facts property
+; of everyone who might know these things - at a minimum the eater
+; and WORLD, but certainly everyone who would notice as well.
+
 (defun ingest-conseqs (cd)
-  (notice (cdpath '(actor) cd)
-          (add-conseq (state (cdpath '(actor) cd)
-                             (if (equal (cdpath '(object) cd) 'water)
-                               'thirsty
-                               'hungry)
-                             'neg))))
+  (let ((eater (cdpath '(actor) cd))
+        (food (cdpath '(object) cd)))
+    (notice eater cd) ; everyone in the area knows about the action
+    (loop for actor in (cons 'world *personae*) do
+          (forgets-fact-of actor (is-at food eater))
+          (forgets-fact-of actor (has eater food))) ; actor and val are reversed from what you'd expect
+    (notice eater
+            (add-conseq (state eater
+                               (if (equal food 'water)
+                                   'thirsty
+                                 'hungry)
+                               'neg)))))
 
 ;  Consequences of a loc change: everyone knows it.
+
 (defun loc-conseqs (cd)
   (notice (cdpath '(actor) cd) cd))
 
 ;  Consequences of an mbuild: if the object is a causal then a demon
 ;  is set up for the actor that will be triggered by the antecedent.
+
 (defun mbuild-conseqs (cd)
   (if (equal (cdpath '(actor) cd)
              (cdpath '(object conseq actor) cd))
@@ -554,9 +438,16 @@
 ;  Consequences of an mloc change: check the demons to see if the
 ;  learned fact affects the learner.  Also check the reaction list
 ;  for general responses to learning such facts.
+
 (defun mloc-conseqs (cd)
   (demon-check (cdpath '(val part) cd)
                (cdpath '(con) cd))
+  ; 151121 - if this is the world knowing something about an actor's
+  ; physiological state (hungry, thirsty, smart, health), then
+  ; let that actor realize it as well.
+  (if (and (eq (cdpath '(val part) cd) 'world)
+           (is-physiological-state (cdpath '(con) cd)))
+      (realize (cdpath '(con actor) cd) (cdpath '(con) cd)))
   (if (not (member 'neg (cdpath '(con mode) cd)))
     (case (header-cd (cdpath '(con) cd))
       (loc (loc-react cd))
@@ -569,6 +460,7 @@
 ;  a CD pattern plus an action.  Whenever the character learns
 ;  something this list is checked to see if there is a response to make.
 ;  Demons are set up by things like the mbuild in a bargain-plan.
+
 (defun demon-check (who event)
   (put who
        'demons
@@ -587,6 +479,7 @@
 ;  places).  If there is no ques in the CD mtransed, then the hearer
 ;  knows about the mtrans, and if he believes the speaker, then he
 ;  believes what the speaker believes.
+
 (defun mtrans-conseqs (cd)
   (let ((actor (cdpath '(actor) cd))
         (object (cdpath '(object) cd))
@@ -613,6 +506,7 @@
 ;  that he will do xdo in return for ydo;
 ;  else if x likes y, then x will do xdo after ydo and says so.
 ;  Otherwise x says no.
+
 (defun promise-conseqs (x xdo y ydo)
   (let ((a (cause ydo (affirm xdo))))
     (cond ((relate x x y 'deceive)
@@ -632,6 +526,7 @@
 ;  Consequences of x asking y to do z: 
 ;  If y doesn't like x or dominates x, then y will say no; otherwise
 ;  y will do z.
+
 (defun request-conseqs (x y z)
   (add-conseq (if (or (not (relate y y x 'like))
                       (relate y y x 'dominate))
@@ -640,6 +535,7 @@
 
 ;  Consequences of a plan: If the actor of the plan act is the actor of 
 ;  the object of the plan, then add the object to the list of actions.
+
 (defun plan-conseqs (cd)
   (if (equal (cdpath '(actor) cd) (cdpath '(object actor) cd))
     (push (cdpath '(object) cd) *actions*))
@@ -647,19 +543,25 @@
 
 
 ;  Consequences of a propel: the object struck dies
+; 151122 - this seems a bit excessive. Will want to examine further.
+
 (defun propel-conseqs (cd)
+  (notice (cdpath '(actor) cd) cd) ; everyone in the area knows about the action
   (if (member (cdpath '(to) cd) *personae*)
     (add-conseq (state (cdpath '(to) cd) 'health 'neg))))
 
 ;  Consequences of a ptrans: location change, for both actor
 ;  and object.
+
 (defun ptrans-conseqs (cd)
+  (notice (cdpath '(actor) cd) cd) ; everyone in the area knows about the action
   (add-conseq (is-at (cdpath '(object) cd) (cdpath '(to) cd)))
   (if (not (equal (cdpath '(actor) cd) (cdpath '(object) cd)))
     (add-conseq (is-at (cdpath '(actor) cd) (cdpath '(to) cd)))))
 
 ;  Reactions to learning of a location change: if it's food or water,
 ;  check to see if learner is hungry or thirsty.
+
 (defun loc-react (cd)
   (and (or (member (cdpath '(con actor) cd)
                    (get-isa 'food (cdpath '(val part) cd)))
@@ -670,12 +572,8 @@
                       'hungry))))
 
 ;  If a character is hungry or thirsty, add the appropriate s-goal
-;  to the list of plans.;  assert-fact is one of the central control functions.  It starts with
-;  one fact, infers the consequences, infers the consequences of the
-;  consequences, etc.  Besides the simple result put in *conseqs*
-;  (e.g., ptrans changes locs), new states may lead to response actions
-;  (put in *actions*) or new plans (put in *plans*).  The plans are
-;  done after all the consequences are inferred.
+;  to the list of plans.
+
 (defun sgoal-check (actor scale)
   (and (in-state actor scale)
        (push (list (if (equal scale 'thirsty)
@@ -687,6 +585,7 @@
 ;  Reactions to learning that someone has learned something:
 ;  if it's someone else, and it's about himself or you believe he
 ;  doesn't deceive you, then you believe it too.
+
 (defun mloc-react (cd)
   (and (not (equal (cdpath '(val part) cd) (cdpath '(con val part) cd)))
        (or (equal (cdpath '(con con actor) cd) (cdpath '(con val part) cd))
@@ -699,22 +598,45 @@
 
 ;  Reactions to learning that you're hungry: add s-goal to list
 ;  of plans.
+;; 151121 Grumble. What this actually does is add the s-goal whenever
+;; _any_ actor thinks you're hungry. Thirst has the same problem.
+;; Notice that mloc-react starts by testing who is the knower
+
 (defun hunger-react (cd)
-  (push (list 'shunger (list 'quote (cdpath '(con actor) cd))) *plans*))
+  (if (eq (cdpath '(val part) cd) (cdpath '(con actor) cd)) ; knower is the hungry one
+      (push (list 'shunger (list 'quote (cdpath '(con actor) cd))) *plans*)))
 
 ;  Reactions to learning you're thirsty: add s-goal to list 
 ;  of plans.
+;; 151121 Fixed analogous to hunger-react
+
 (defun thirst-react (cd)
-  (push (list 'sthirst (list 'quote (cdpath '(con actor) cd))) *plans*))
+  (if (eq (cdpath '(val part) cd) (cdpath '(con actor) cd)) ; knower is the thirsty one
+      (push (list 'sthirst (list 'quote (cdpath '(con actor) cd))) *plans*)))
 
 ;  Notice says that everyone in the same location as who knows
 ;  about CD.
+;
+; 151121 When who arrives at where, they get to know the location of 
+; objects that are at that location (even if they already do know that)
+
 (defun notice (who cd)
   (let ((where (loc-name-of who)))
     (mapc #'(lambda (persona)
               (if (equal (loc persona) where)
-                (add-conseq (mloc persona cd))))
-          *personae*)))
+                  (add-conseq (mloc persona cd))))
+          *personae*)
+    (mapc #'(lambda (object)
+              (if (and (equal (loc-name-of object) where) ; there's an object at new location
+                       (not (knows-loc who object)))      ; and the person doesn't know that
+                  (add-conseq (mloc who (is-at object (loc object)))))) ; now they do
+          (set-difference *all-objects* *all-locations*))))
+
+; 151121 So, if the world learns something about the physiological state of an
+; actor, then presumably that actor should know it too.
+
+(defun realize (who what) 
+  (add-conseq (mloc who what)))
 
 ;  Memory functions and pattern matcher
 ;  addfact adds a CD to knower's knowledge set.  Also if world
@@ -723,30 +645,31 @@
 ;  The CD is added to the front of the fact list, so that memquery
 ;  will get the most recent CD that matches its query pattern.  Older
 ;  contradicted facts are still on the list but are not seen.
+
 (defun addfact (knower cd)
   (put knower 'facts (cons cd (get knower 'facts)))
   ;;; Now check for deceased people.
-  (if (and (equal knower 'world)
+  (when (and (equal knower 'world)
            (equal (header-cd cd) 'health)
            (member 'neg (cdpath '(mode) cd)))
     (setf *personae* 
           (remove (cdpath '(actor) cd)
-                  *personae*)))
+                  *personae*))
+    (setf *deceased* (cons (cdpath '(actor) cd) *deceased*)))
   nil)
 
-;  is-state returns non-nil if CD is one of the state forms.
-(defun is-state (cd)
-  (member (header-cd cd)
-          '(loc 
-            mloc 
-            cont 
-            like 
-            deceive 
-            dominate 
-            hungry 
-            thirsty ; this was thristy in the original
-            health 
-            smart)))
+;  Removes fact from data base
+
+(defun forgets-fact-of (actor fact)
+  (let ((fact-to-be-forgotten (has-fact-of actor fact)))
+    (put actor
+         'facts
+         (remove-if #'(lambda (g)
+                        (equal g fact-to-be-forgotten))
+                   (get actor 'facts)))))
+
+(defun has-fact-of (actor pat)
+  (car (pat-member pat (get actor 'facts))))
 
 ;  now-knows adds what to the data base for who.  It also prints in
 ;  English this new fact.  If who = world (a true fact) and what is
@@ -754,20 +677,23 @@
 ;  learned it.  If say-flag is t, then mlocs are always generated in
 ;  English; otherwise only facts (who = world) are generated.  This
 ;  reduces the volume of the output.
+
 (defun now-knows (who what say-flag)
-  (let ((newwho
-         (if (and (equal who 'world) 
-                  (equal (header-cd what) 'mloc))
-           (cdpath '(val part) what)
-           who))
-        (newwhat
-         (if (and (equal who 'world) 
-                  (equal (header-cd what) 'mloc))
-           (cdpath '(con) what)
-           what)))
+  (let* ((world-knowing-mental-content?
+          (and (equal who 'world)
+               (equal (header-cd what) 'mloc)))
+         (newwho
+          (if world-knowing-mental-content?
+              (cdpath '(val part) what)
+            who))
+         (newwhat
+          (if world-knowing-mental-content?
+              (cdpath '(con) what)
+            what))
+         experiencer)
     (if (or say-flag 
             (equal newwho 'world))
-      (say (mloc newwho newwhat)))
+        (say (mloc newwho newwhat)))
     (addfact newwho newwhat)))
 
 ;  knows(knower,fact) returns fact if fact is in data base for knower:
@@ -775,6 +701,7 @@
 ;     know and look up subfact,
 ;  -- if fact has a ?unspec, then return the filler that replaces
 ;    the ?unspec in the data base.
+
 (defun knows (knower fact)
   (let ((newfact
          (if (and (equal (header-cd fact) 'mloc)
@@ -794,11 +721,13 @@
 
 ;  memquery find the first item in knower's data base that
 ;  matches fact.
+
 (defun memquery (knower pat)
   (car (pat-member pat (get knower 'facts))))
 
 ;  pat-member finds the first item in cd-list that matches
 ;  pat and returns cd-list from that item on.
+
 (defun pat-member (pat cd-list)
   (if cd-list
     (let ((cd (car cd-list)))
@@ -807,15 +736,18 @@
         (pat-member pat (cdr cd-list))))))
 
 ;  Returns non-nil if actor has goal.
+
 (defun has-goal-of (actor pat)
   (car (pat-member pat (get actor 'goals))))
 
 ;  Adds goal to data base.
+
 (defun gets-new-goal-of (actor goal)
   (put actor 'goals (cons goal (get actor 'goals)))
   (say (wants actor goal)))
 
 ;  Removes goal from data base
+
 (defun forgets-goal-of (actor goal)
   (let ((goal-to-be-forgotten (has-goal-of actor goal)))
     (put actor
@@ -825,11 +757,13 @@
                    (get actor 'goals)))))
 
 ;  Returns non-nil if x is in a state, e.g., hungry.
+
 (defun in-state (x st)
   (find-out 'world (state x st 'pos)))
 
 ;  Returns non-nil if X believes that y relates to z in a certain way.
 ;  Usually either y or z is x.
+
 (defun relate (x y z rel)
   (find-out x (relation y z rel 'pos)))
 
@@ -843,36 +777,82 @@
 ;  also used to determine how two characters relate to on another
 ;  (e.g., do they like one another?, does one have a tendency to
 ;  deceive the other, etc.).
+;
+; 151101: Don't actually ask the user. Instead, do a random choice.
+; 151127: This is a problem - example is when Joe starts as thirsty
+;  (with no explicit statement about his hunger). When he goes to 
+;  the river to get a drink, he becomes aware of fish in the river,
+;  which triggers sgoal-check to see if he's hungry, which eventually
+;  winds up here. Since there's no previous knowledge of his hunger
+;  state, one gets generated (seemingly biased toward 'pos), which
+;  distracts Joe from taking a drink. Maybe more importantly, Joe's
+;  hunger never gets pushed through SAY. Let's just check if we're
+;  who = world, and if so, let's (realize [CD actor] CD), which
+;  should make the state explicit for the character, as well as
+;  adding it to the world's knowledge.
+
 (defun find-out (who cd)
   (let ((mode (knows-if who cd)))
     (cond (mode 
            (member 'pos mode))
           (t
-           (say-immediate (mloc who cd)) ; 151018 changed to reflect delayed generation
-           (format t "~% [Y/N]? ~%>")
-           (let ((answer (equal (read) 'y)))
-             (addfact who
-                      (setrole 'mode
-                               (list (if answer 'pos 'neg))
-                               cd))
+;           (say-immediate (mloc who cd)) ; 151018 changed to reflect delayed generation
+;           (format t "~% [Y/N]? ~%>")
+           (let* ((answer (random-choice '(nil t)))
+                  (newfact (setrole 'mode
+                                    (list (if answer 'pos 'neg))
+                                    cd))
+                  (cdactor (cdpath '(actor) newfact)))
+             (addfact who newfact)
+;             (say (mloc who newfact)) ; 151127 - new, to force it into *story-sequence*
+;                                      ; 151128 - wrap as MLOC - who thinks this (so we can
+;                                      ; distinguish between Joe liking Louise and Louise
+;                                      ; thinking that Joe likes her...
+             (cond ((eq who 'world)
+                    (say (mloc cdactor newfact))
+                    (realize cdactor newfact))
+                   (t (say (mloc who newfact))))
+             ; So, you've made a random choice. If this is something the
+             ; world has just learned, then whatever actor it applies to
+             ; should also get to learn it - which is what realize will do.
+;             (if (eq who 'world)
+;                (realize (cdpath '(actor) newfact) newfact))
              answer)))))
 
+; Original version
+;(defun find-out (who cd)
+;  (let ((mode (knows-if who cd)))
+;    (cond (mode 
+;           (member 'pos mode))
+;          (t
+;           (say-immediate (mloc who cd)) ; 151018 changed to reflect delayed generation
+;           (format t "~% [Y/N]? ~%>")
+;           (let ((answer (equal (read) 'y)))
+;             (addfact who
+;                      (setrole 'mode
+;                               (list (if answer 'pos 'neg))
+;                               cd))
+;             answer)))))
+
+
 ;  True if y thinks x is a friend of his.
+
 (defun is-friend-of (x y)
   (and (not (equal x y))
        (relate y x y 'like)))
 
 ;  Returns location of x.
-(defun loc (x)
-  (knows-loc 'world x))
+(defun loc (x) (knows-loc 'world x))
 
 ;  True if x and y are in the same place.
+
 (defun is-prox (x y)
   (equal (loc-name-of x)
          (loc-name-of y)))
 
 ;  A CD is true if it's an mloc and the content is in the person's
 ;  data base, or it's in the data base for world.
+
 (defun is-true (cd)
   (if (equal (header-cd cd) 'mloc)
     (knows (cdpath '(val part) cd) (cdpath '(con) cd))
@@ -881,6 +861,7 @@
 ;  loc-name-of returns the real location of x.  This may involve going
 ;  up several levels -- e.g., when Joe takes a worm, its location is
 ;  stored as joe, but its real location is the location Joe is at.
+
 (defun loc-name-of (x)
   (let ((loc-of-x (loc x)))
     (cond ((member x *all-locations*)
@@ -896,6 +877,7 @@
 
 ;  get-isa is like get but checks is-a node for x if x has no
 ;  y property.				
+
 (defun get-isa (x y)
   (or (get y x)
       (get (get y 'is-a) x)))
@@ -1003,6 +985,76 @@
         (list 'actor x)
         (list 'val '?unspecified)))
 
+;; helpers - test the type of a CD
+
+;; Actions
+
+(defun is-atrans? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'atrans)))
+
+(defun is-cause? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'cause)))
+
+(defun is-grasp? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'grasp)))
+
+(defun is-un-grasp? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'un-grasp)))
+
+(defun is-ingest? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'ingest)))
+
+(defun is-mbuild? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'mbuild)))
+
+(defun is-mtrans? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'mtrans)))
+
+(defun is-plan? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'plan)))
+
+(defun is-propel? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'propel)))
+
+(defun is-ptrans? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'ptrans)))
+
+(defun is-wants? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'wants)))
+
+;; States
+
+;  is-state returns non-nil if CD is one of the state forms.
+
+(defun is-state (cd)
+  (member (header-cd cd)
+          '(loc 
+            mloc 
+            cont 
+            like 
+            deceive 
+            dominate 
+            hungry 
+            thirsty ; this was thristy in the original
+            health 
+            smart)))
+
+(defun is-physiological-state (cd)
+  (member (header-cd cd)
+          '(hungry 
+            thirsty
+            health 
+            smart)))
+
+(defun is-cont? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'cont)))
+
+(defun is-loc? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'loc)))
+
+(defun is-mloc? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'mloc)))
+
+(defun is-like? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'like)))
+
+(defun is-deceive? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'deceive)))
+
+(defun is-dominate? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'dominate)))
+
+(defun is-hungry? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'hungry)))
+
+(defun is-thirsty? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'thirsty)))
+
+(defun is-health? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'health)))
+
+(defun is-smart? (cd) (and (is-cd-p cd) (eq (header-cd cd) 'smart)))
+
 ;  Mode functions
 
 (defun mode (cd)
@@ -1021,6 +1073,7 @@
     (setrole 'mode (cons 'neg (remove 'pos (mode cd))) cd)))
 
 ;  maybe makes a CD hypothetical -- doesn't matter if it's true or false.
+
 (defun maybe (cd)
   (if (member 'maybe (mode cd))
     cd
@@ -1028,6 +1081,7 @@
 
 ;  question/un-question make a CD a question/non-question -- doesn't
 ;  matter if it's true or false.
+
 (defun question (cd)
   (if (member 'ques (mode cd))
     cd
@@ -1038,14 +1092,30 @@
 
 ;  tf adds "transition final" to a CD -- doesn't matter if it's true
 ;  or false.
+
 (defun tf (cd)
   (if (member 'tf (mode cd))
     cd
     (setrole 'mode (cons 'tf (mode cd)) cd)))
 
 ;  future sets a CD to a future time.
+
 (defun future (cd)
   (setrole 'time 'future cd))
+
+;; 151109 what about past and present? And let's provide a way to 
+;; forceably impose the current default tense
+
+(defun past (cd) (setrole 'time 'past cd))
+
+(defun present (cd) (setrole 'time 'present cd))
+
+(defun impose-default-tense (cd)
+  (case *default-tense*
+    (present (present cd))
+    (future (future cd))
+    (otherwise (past cd))))
+
 
 ;  Path
 ;
@@ -1066,6 +1136,7 @@
 ;  (cdpath '(object object) cd) returns worm.
 ;
 ;  If a role doesn't exist in a CD form, then cdpath returns nil.
+
 (defun cdpath (rolelist cd)
   (if (null rolelist)
     cd
@@ -1075,6 +1146,7 @@
 ;  CD Functions
 
 ;  is-cd-p determines whether a given sexpr is a CD.
+
 (defun is-cd-p (x)
   (and (listp x)
        (atom (header-cd x))
@@ -1088,31 +1160,33 @@
            (list-of-role-filler-pairs-p (cdr x)))))
 
 ;  header-cd gets the head act of a CD form.
-(defun header-cd (x)
-  (car x))
+
+(defun header-cd (x) (car x))
 
 ;  roles-cd gets the list of role-pairs of a CD form.
-(defun roles-cd (x)
-  (cdr x))
+
+(defun roles-cd (x) (cdr x))
 
 ;  Role-pairs have the form (role filler).
 ;  role-pair returns the role.
-(defun role-pair (x)
-  (car x))
+
+(defun role-pair (x) (car x))
 
 ;  filler-pair returns the filler.
-(defun filler-pair (x)
-  (cadr x))
+
+(defun filler-pair (x) (cadr x))
 
 ;  A filler for a role is found by looking for the role name in the CD,
 ;  and returning the filler if a pair is found.
+
 (defun filler-role (role cd)
   (if (listp cd)
     (let ((pair (assoc role (roles-cd cd))))
       (if pair (filler-pair pair)))))
 
 ;  setrole makes a new CD form with (role filler) added
-;  or replacing the old (role ...) pair.
+;  or replacing the old (role ...) pair. 
+
 (defun setrole (role filler cd)
   (cons (header-cd cd)
         (cons (list role filler)
@@ -1142,8 +1216,6 @@
          (mapcan #'(lambda (Sub)
                      (unify-1 (cdr Pat1) (cdr Pat2) Sub))
                  (unify-1 (car Pat1) (car Pat2) Sub)))))
-
-(defvar *OccursCheck-P* T)
 
 (defun var-unify (PCVar Pat Sub)
   (cond ((or (eql PCVar Pat)
@@ -1239,6 +1311,7 @@
 ;  are "modes" are the exception; they are fillers which are lists,
 ;  but are not CDs, so a special exception has to be made for them
 ;  in the unification procedure below.
+
 (defun unify-pairs (pairs1 pairs2 sub)
   (if (or (null pairs1) (null pairs2))
     (list sub)
@@ -1272,5 +1345,5 @@
               newsubs))))
 
 ;  Done loading
-(format t "~%;Done loading talesim.")
+;(format t "~%;Done loading talesim.")
 

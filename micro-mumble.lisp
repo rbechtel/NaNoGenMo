@@ -53,7 +53,7 @@
 
 ;  Set the storytelling in the past tense.
 
-(in-package "NNGM")
+; (in-package "NNGM") ; removed for development/debug 151108
 
 ; In the original version,
 ;  say prints a CD as an English sentence.  If CD is an mloc of the
@@ -76,11 +76,124 @@
 ;; Since stuff just gets consed onto *story-sequence*, you want to 
 ;; reverse it before playing it back. You also want to clear it
 ;; after reciting.
+;;
+;; 151108: Introduce the possibility of editing the event sequence
+;;  before rendering (via judicious-edit)
 
 (defun recite (&optional keep-sequence)
-  (mapc #'say-thing (reverse *story-sequence*))
-  (unless keep-sequence (setf *story-sequence* nil))
-  )
+  (let (recite-sequence)
+    (setf recite-sequence (judicious-edit (reverse *story-sequence*)))
+    (mapc #'say-thing recite-sequence)
+    (unless keep-sequence (setf *story-sequence* nil)) ))
+
+;; Placeholder for examining and revising an event list prior to
+;; actual text generation. Initial version (151108) just returns
+;; its input, so no manipulation.
+;;
+
+; (defun judicious-edit (seq-list) seq-list) ; original
+
+;; First cut (after placeholder).
+;; 1/ Suppress (remove) CDs that just say
+;; "Character knew that character was involved in state or action", e.g.,
+;; Joe knew that he was near the cave. (esp. right after saying he was near the cave)
+;; 2/ Instead of thinking that you know something, just say you know it (will need
+;; exceptions eventually - when you think you know something but it isn't true).
+;;
+;; As currently written, this only considers a single CD for inclusion/exclusion based
+;; on its own content. No context effects.
+
+(defun judicious-edit (seq-list)
+  (mapcan #'(lambda (cd)
+              (cond ((knowing-own-location? cd) nil)
+                    ((self-knowledge? cd) (list (impose-default-tense (cdpath '(con) cd))))
+                    (t (list cd))))
+          seq-list))
+
+;; 151110 A step toward alternate views of the *story-sequence* (or really, any
+;;  list of SAY outputs). This collects all the entries that feature a specified
+;;  character as the actor (or, in the case of mloc, as the holder of the concept)
+;;
+;;  Doesn't deal with CAUSE CDs - they have ante and conseq, so would want to recurse 
+;;  into those looking for ACTOR.
+;;
+;;  Note that the list returned reverses the order from the input sequence.
+;;
+;;  You can use this to find "facts" by calling with character='world
+;;
+;; 151122 Hmm. Might want to carry over non-CD items from the input list - as I'm
+;; currently using them, they delimit parts of the story, and it would be good
+;; to be able to have those delimiters.
+
+(defun character-thread (character seq-list)
+  (do* ((input-list seq-list (rest input-list))
+        (this-item (first input-list) (first input-list))
+        output-list)
+       ((null input-list) output-list) ; hmm. if seq-list is *story-sequence*, you don't (reverse output-list))
+    (if (and (is-cd-p this-item)
+             (eq character
+                 (case (header-cd this-item)
+                   (mloc (cdpath '(val part) this-item))
+                   (cause nil) ; special case, needs more sophisticated handling
+                   (otherwise (cdpath '(actor) this-item)))))
+        (setf output-list (cons this-item output-list))
+        (if (or (stringp this-item) (atom this-item)) ; keep delimiters
+            (setf output-list (cons this-item output-list))))))
+
+;; Fact extraction. Many of the entries in *story-sequence* are of the form
+;; (MLOC (CON <some CD>) (VAL (CP (PART WORLD)))), which can be glossed as
+;; "The world knows <some CD>" which is the MTS way of saying <some CD> is
+;; a fact. This just runs over the *story-sequence* pulling out those
+;; facts. Shouldn't be any detectable difference between mapping say-thing
+;; over *story-sequence* and mapping it over the value returned from this
+;; function, but it might be easier for judicious-edit and neighbors to 
+;; deal with this "fact extracted" version.
+
+(defun extract-facts (sequence) 
+  (mapcar #'fact-extractor sequence))
+
+(defun fact-extractor (pfact)
+  (if (or (stringp pfact) (atom pfact))
+      pfact ; just pass facts and strings through
+      (if (unify-cds '(mloc (val (cp (part world)))) pfact)
+          (cdpath '(con) pfact)
+          pfact)))
+
+;; So, let's devise a test to figure out if a CD is just telling us
+;; that a character knows where they are. That's kind of boring, at least
+;; early on when setting the stage, since the reader can infer that 
+;; characters know where they are.
+;;
+;; Exceptions would be when a character _doesn't_ know where they are,
+;; or if realizing that they are somewhere occurs as a result of action
+;; in support of a goal. (Though if we've already been told that the
+;; character has arrived, then this still isn't interesting.)
+;;
+;; Hmmm. There's nothing that constrains the conceptualization to be
+;; LOC, so maybe this is more like "knowing-own-mind?"
+
+(defun knowing-own-location? (cd)
+  (if (is-mloc? cd) ; valid MLOC CD
+      (eq (cdpath '(val part) cd) (cdpath '(con actor) cd))))
+
+
+;; Like knowing-own-location, except that the location is a pcvar (?UNSPEC)
+
+(defun unsure-of-own-location? (cd)
+  (if (is-mloc? cd) ; valid MLOC CD
+      (and (eq (cdpath '(val part) cd) (cdpath '(con actor) cd))
+           (pcvar-p (cdpath '(con val) cd)))))
+
+;; a little self-knowledge is a dangerous thing
+;; This is useful to detect CDs that will lead to surface output
+;; like "Joe thought that he did not know where the fish was." which
+;; could probably become just "Joe did not know where the fish was."
+
+(defun self-knowledge? (cd)
+  (when (is-mloc? cd)
+    (eq (cdpath '(val part) cd)           ; outer knower
+        (cdpath '(con val part) cd))))    ; inner knower
+
 
 ;; Revised things in micro-talesim so that all story output goes
 ;; into *story-sequence*, so we need to be able to handle strings
@@ -89,27 +202,78 @@
 ;;         atoms, to indicate, e.g., scene shifts. How they get
 ;;         handled is TBD, but for now, we'll tweak SAY-THING
 ;;         so it doesn't break.
+;; 151108: Changed similarly to delayed text via recite. Instead
+;;  of things below this doing a format to directly route text
+;;  to the output, push things onto an output queue, then at
+;;  the end, render the resulting queue. The input argument,
+;;  thing, most likely will render as a sentence. Use the
+;;  global *sentence-queue*.
 
 (defun say-thing (thing)
-  (cond ((stringp thing) (format t thing))
-        ((atom thing) (say2 thing)) ; SAY2 is TBD at this point
-        (t (say-thing1 thing))))    ; and here's the original stuff
+  (setf *sentence-queue* nil) ; clear the sentence queue
+  (cond ((stringp thing) (push thing *sentence-queue*)) ; strings go directly on the queue
+        ((atom thing) (say2 thing)) ; atoms get interpreted by say2, within render-sentence
+        (t (say-thing1 thing)))    ; everything else is handled by say-thing1
+  (render-sentence *sentence-queue*)) ; sentence-level equivalent of recite
+
+;; 151108: How do things get on the *sentence-queue*? Obvious way is to push them.
+;;  Putting all those pushes inline is not very elegant (and doesn't offer much
+;;  opportunity to do much with them if desired). How about a helper function?
+
+(defun add-to-sent (item) (push item *sentence-queue*))
+
+;; 151108: Something to render *sentence-queue*
+;; Want to pass atomic markers through to here so we can interpret them in context.
+;; Could also have a single string...
+;;
+;; 151129: Instead of each sentence starting a new line, let's clump them together, eh?
+;;  Stuff that has embedded spaces doesn't need additional spaces (or periods, if at end)
+
+(defun render-sentence (slist)
+  (let ((last-word (first slist))
+        (earlier-words (reverse (rest slist))))
+    (if earlier-words (format t "~{~A ~}" earlier-words))
+    (if last-word 
+        (if (find #\space last-word)
+            (format t "~A" last-word)
+          (format t "~A. " last-word)))))
+
+;; 151108 an attempt to improve render-sentence, but I'm kinda stuck right now,
+;;  so putting this aside temporarily
+
+(defun render-sentence2 (slist)
+  (do* ((last-word (first slist))
+        (earlier-words (reverse (rest slist)))
+        (remaining-words earlier-words (rest remaining-words))
+        (at-start t nil) ; you're at the start when you begin, but not after the first iteration
+        (current-word (first remaining-words)))
+       ((null remaining-words) ; you've run out of words, so just deal with the last word
+        (render-word-in-sent last-word at-start t)) ; flag that this is final word, and (if no earlier) first word
+    (render-word-in-sent current-word at-start nil)))
+
+;; 151108 temporary version, just dumps its argument and a space. BAD, but should run.
+
+(defun render-word-in-sent (word &optional first-word? last-word?) (format t "~A " word))
 
 ;; SAY-THING1 is never called recursively, so we can add a "at beginning" flag
 ;; when it invokes SAY1.
+;;
+;; Worth noting that if the CD is an MLOC with (val (cp (part world))) [a fact]
+;; then you just generate the con part of the MLOC, rather than saying "The world
+;; knew that ..."
 
 (defun say-thing1 (cd)  ; in the original, was just SAY
   (let ((cd-to-be-said (if (unify-cds '(mloc (val (cp (part world)))) cd)
                          (cdpath '(con) cd)
                          cd)))
-    (format t "~%") ; original
+    ; (format t "~%") ; original - no longer needed - you can tell when you're at the start of *sentence-queue*
     (say1 cd-to-be-said 
           (or (cdpath '(time) cd-to-be-said)
               *default-tense*)
           nil
           t
           t) ; 151020 - add flag that indicates this is a top-level call
-    (format t ".")
+    ; (format t ".") ; no longer needed - you can tell you're at the end of the *sentence-queue*
     cd))
 
 ;; 151018: However, moving to delayed surface form generation means that
@@ -142,7 +306,7 @@
     (let ((say-fun (get (header-cd cd) 'say-fun)))
       (if say-fun 
         (apply say-fun (list cd tense inf subj at-start mentioned))
-        (format t "~% < ~s > " cd)))))
+        (add-to-sent (format nil "~% < ~s > " cd)))))) ; this is kind of funky now with *sentence-queue* 151108
 
 ;; SAY2 handles atomic markers. They don't exist in the original MTS.
 ;; MTS did have the concept, in the form of "Once upon a time...", 
@@ -153,8 +317,22 @@
 ;; It seems likely, especially as stories get more complex, that there
 ;; could be other markers, so we'll allow atomic markers and figure out
 ;; what to do with them here. For now, do nothing.
+;;
+;; 151107: Tweaked spin-episode to put atomic markers in *story-sequence*
+;; The current markers are start-episode, end-episode, and begin-action.
+;; start-episode emits a chapter header, end-episode does nothing (because
+;; if there's more, there will be a chapter header), and begin-action
+;; emits "One day, "
+;;
+;; 151108: Probably needs to be re-examined in light of *sentence-queue* and
+;;  render-sentence - should render-sentence be doing this expansion?
+;; 151129: Tweaked the start-episode branch to ensure that we have newlines following chapter heading.
 
-(defun say2 (atom) nil)
+(defun say2 (atom) nil
+  (case atom
+    (start-episode (add-to-sent (format nil "~%~%CHAPTER ~A~%~%" (incf *chapter-counter*)))); (format t "Once upon a time, "))
+    (end-episode nil) ; (format t "The end."))
+    (begin-action (add-to-sent (format nil "~%~%One day, ")))))
 
 ;  subclause recursively calls say1 with the subconcept at the 
 ;  endpoint of rolelist.  word, if non-nil, starts the subclause,
@@ -166,16 +344,19 @@
 ; 151024 add optional mentioned list - these are things that
 ;   have been mentioned in a parent clause (like a subject)
 ;   we can pronominalize them now.
+; 151108: with *sentence-queue* we may not need at-start (and
+;  may want to shove the surface-prep call into render-sentence)
 
 (defun subclause (cd word rolelist tense &optional at-start mentioned)
   (if word
-      (if at-start
-          (format t "~@(~a~) "
-                  (surface-prep (or (relative-pronoun rolelist cd)
-                                    word)))
-          (format t "~a "
-                  (surface-prep (or (relative-pronoun rolelist cd)
-                                    word)))))
+      (add-to-sent
+       (if at-start
+           (format nil "~@(~a~)" ; 151108 deleted trailing space - render-sentence should handle
+                   (surface-prep (or (relative-pronoun rolelist cd)
+                                     word)))
+           (format nil "~a" ; 151108 deleted trailing space - render-sentence should handle
+                   (surface-prep (or (relative-pronoun rolelist cd)
+                                    word)))) ))
   (let ((subcd (cdpath rolelist cd)))
     (say1 subcd (sub-tense tense subcd) nil t at-start mentioned)))
 
@@ -238,18 +419,18 @@
            (say-subj-verb cd tense inf subj '(actor) 'take at-start mentioned)
            (say-filler cd '(object) nil mention2)
            (when (cdpath '(from) cd) ; there's actually a "whom" that object was taken from
-             (format t " ") ; 151018 hack - need space after you say what you're taking
+;             (format t " ") ; 151018 hack - need space after you say what you're taking
              (say-prep cd 'from '(from) nil mention2)
-             (format t " ") ; 151018 hack - need space after you say who you're taking from
+;             (format t " ") ; 151018 hack - need space after you say who you're taking from
                             ; this will need to be conditional on whether you're at the
                             ; end of a sentence or not - if at end, don't add space
              ))
           (t
            (say-subj-verb cd tense inf subj '(actor) 'give at-start mentioned)
            (say-filler cd '(to) nil mention2 'obj)
-           (format t " ") ; 151018 hack - need space after you say who you're giving to
+;           (format t " ") ; 151018 hack - need space after you say who you're giving to
            (say-filler cd '(object) nil mention2 'obj)
-           (format t " ") ; 151018 hack - need space after you say what you're giving
+;           (format t " ") ; 151018 hack - need space after you say what you're giving
                           ; this will need to be conditional on whether you're at the
                           ; end of a sentence or not - if at end, don't add space
            ))))
@@ -264,12 +445,12 @@
     (cond ((member 'ques (cdpath '(object mode) cd))
            (say-subj-verb cd tense inf subj '(actor) 'ask at-start mentioned)
            (say-filler cd '(to part) nil mention2)
-           (format t " ") ; 151018 hack - need space after you say who you've asked
+;           (format t " ") ; 151018 hack - need space after you say who you've asked
            (subclause cd 'whether '(object) 'cond nil mention2))
           (t
            (say-subj-verb cd tense inf subj '(actor) 'tell at-start mentioned)
            (say-filler cd '(to part) nil mention2 'obj)
-           (format t " ") ; 151017: need a break between who to tell and what
+;           (format t " ") ; 151017: need a break between who to tell and what
                           ; might need something similar on ask branch
            (subclause cd 'that '(object) (cdpath '(time) cd) nil mention2)))))
 
@@ -316,12 +497,15 @@
 
 ;  grasp may go to either "let go of" or "grab."
 ; 151020 add optional AT-START flag
+; 151108 adjust format t " go of " for render-sentence
 
 (defun say-grasp (cd tense inf subj &optional at-start mentioned)
   (let ((mention2 (cons (cdpath '(actor) cd) mentioned)))
     (cond ((in-mode cd 'tf)
            (say-subj-verb cd tense inf subj '(actor) 'let at-start mentioned)
-           (format t " go of  "))
+           (add-to-sent "go")
+           (add-to-sent "of"))
+;           (format t " go of  "))
           (t
            (say-subj-verb cd tense inf subj '(actor) 'grab at-start mentioned)))
     (say-filler cd '(object) nil mention2)))
@@ -428,7 +612,8 @@
 
 (defun say-health (cd tense inf subj &optional at-start mentioned)
   (say-subj-verb cd tense inf subj '(actor) 'be at-start mentioned)
-  (format t "alive"))
+  (add-to-sent "alive"))
+;  (format t "alive"))
 
 (put 'health 'say-fun #'say-health)
 
@@ -437,7 +622,8 @@
 
 (defun say-smart (cd tense inf subj &optional at-start mentioned)
   (say-subj-verb cd tense inf subj '(actor) 'be at-start mentioned)
-  (format t  "bright"))
+  (add-to-sent "bright"))
+;  (format t  "bright"))
 
 (put 'smart 'say-fun #'say-smart)
 
@@ -446,7 +632,8 @@
 
 (defun say-hungry (cd tense inf subj &optional at-start mentioned)
   (say-subj-verb cd tense inf subj '(actor) 'be at-start mentioned)
-  (format t  "hungry"))
+  (add-to-sent "hungry"))
+;  (format t  "hungry"))
 
 (put 'hungry 'say-fun #'say-hungry)
 
@@ -455,7 +642,8 @@
 
 (defun say-thirsty (cd tense inf subj &optional at-start mentioned)
   (say-subj-verb cd tense inf subj '(actor) 'be at-start mentioned)
-  (format t "thirsty"))
+  (add-to-sent "thirsty"))
+;  (format t "thirsty"))
 
 (put 'thirsty 'say-fun #'say-thirsty)
 
@@ -470,7 +658,8 @@
     (declare (ignore subj))
     (cond ((in-mode cd 'ques)
            (subclause cd nil '(conseq) 'future at-start mentioned)
-           (format t "if ")
+           (add-to-sent "if")
+;           (format t "if ")
            (subclause cd nil '(ante) (case tense
                                        (figure 'present)
                                        (cond *default-tense*)
@@ -478,11 +667,14 @@
                       nil
                       (cons (cdpath '(conseq actor) cd) mentioned)))
           (t
-           (if at-start (format t "If") (format t "if "))
+           (if at-start
+               (add-to-sent "If")  ; (format t "If")
+               (add-to-sent "if")) ;(format t "if "))
            (subclause cd nil '(ante) 'future nil mentioned)
-           (format t "then ")
+           (add-to-sent "then")
+;           (format t "then ")
            (subclause cd nil '(conseq) 'cond nil ; mentioned)))))
-                      (cons (cdpath '(ante actor) cd) mention2))))))
+                      (cons (cdpath '(ante actor) cd) mentioned))))))
 
 (put 'cause 'say-fun #'say-cause)
 
@@ -531,18 +723,21 @@
 
 (defun say-pp (cd &optional at-start mentioned (pcase 'subj))
   (cond ((and at-start (member cd *all-objects*))    ; you're at the start of a sentence. Capitalize.
-         (format t "The ")
-         (format t "~a" (surface-prep cd))) ; changed ~s to ~a because surface-prep will give us a string
+         (add-to-sent "The")
+;         (format t "The ")
+         (add-to-sent (format nil "~a" (surface-prep cd)))) ; changed ~s to ~a because surface-prep will give us a string
         (at-start ; but not an object
-         (format t "~@(~a~)" (surface-prep (if (member cd mentioned)
-                                               (pronominalize cd pcase)
-                                             cd)))) ; capitalize
+         (add-to-sent (format nil "~@(~a~)" (surface-prep (if (member cd mentioned)
+                                                              (pronominalize cd pcase)
+                                                            cd))) )) ; capitalize
         ((member cd *all-objects*)
-         (format t "the ")
-         (format t "~a" (surface-prep cd)))
-        (t (format t "~a" (surface-prep (if (member cd mentioned)
-                                            (pronominalize cd pcase)
-                                          cd))))))
+         (add-to-sent "the")
+;         (format t "the ")
+         (add-to-sent (format nil "~a" (surface-prep cd))))
+        (t
+         (add-to-sent (format nil "~a" (surface-prep (if (member cd mentioned)
+                                                         (pronominalize cd pcase)
+                                                       cd))) ))))
 
 ;; 151024 - this is clearly inadequate. Working on case and plurals.
 ;;   Plurals are currently marked on the 'plural property of a word
@@ -553,13 +748,15 @@
       (case pcase
         (subj 'they)
         (obj 'them)
-        (poss 'their))
+        (poss 'their)
+        (otherwise item))
       (case gender
         (male 
          (case pcase
            (subj 'he)
            (obj 'him)
-           (poss 'his)))
+           (poss 'his)
+           (otherwise item)))
         (female 
          (case pcase
            (subj 'she)
@@ -593,7 +790,7 @@
 (defun say-prep (cd prep rolelist &optional at-start mentioned (pcase 'obj))
   (let ((subcd (cdpath rolelist cd)))
     (cond (subcd
-           (format t "~(~a~) " prep)
+           (add-to-sent (format nil "~(~a~)" prep))
            (say-pp subcd at-start mentioned pcase)))))
 
 ;  in-mode tests whether x is in CD's mode.
@@ -608,7 +805,8 @@
 
 (defun say-neg (cd)
   (if (in-mode cd 'neg)
-    (format t "not ")))
+      (add-to-sent "not")))
+;    (format t "not ")))
 
 ;  say-subj-verb prints the subject (unless suppressed by
 ;  subj = nil, infinitives, or an ?unspec as the subject) and verb, 
@@ -635,11 +833,12 @@
           ; mode, you could do SAY-NEG after the infinitive (? works for BE, maybe
           ; not for other things?) Not making any changes yet.
     (cond (inf
-           (when subj (say-pp subject at-start mentioned) (format t " "))
+           (when subj (say-pp subject at-start mentioned)) ; (format t " "))
                ; 151020 grumble. If no subj but neg, at-start won't be handled properly
                ; also not handled if no subj, not neg. Need examples to work through
            (say-neg cd)
-           (format t "to ~a " (surface-prep infinitive)))
+           (add-to-sent "to")
+           (add-to-sent (format nil "~a" (surface-prep infinitive))))
           (t
            (if (not (pcvar-p subject)) 
              (say-pp subject at-start mentioned))
@@ -668,9 +867,9 @@
                          'do))))
              (cond (auxilary
                     (say-tense cd tense inf subj auxilary plural)
-                    (unless (eq auxilary 'do) (format t " ")) ; 151017 heavy-handed hack
+;                    (unless (eq auxilary 'do) (format t " ")) ; 151017 heavy-handed hack
                     (say-neg cd)
-                    (format t "~a " (surface-prep infinitive))) ; 151017 removed leading space
+                    (add-to-sent (format nil "~a" (surface-prep infinitive)))) ; 151017 removed leading space
                    (t
                     (say-tense cd tense inf subj infinitive plural)
 ; 151015                    (format t " ") ; clear out some extra spaces
@@ -681,29 +880,41 @@
 ;  Conjugations of irregular verbs are stored under the past and present
 ;  properties of the verb, in the format (singular plural) for each.
 ;  For regular verbs, say-tense adds "d", "ed", or "s" as appropriate.
+;
+; 151108: Changing to *sentence-queue* and render-sentence screws this up, because
+;  as originally written it builds any suffixes for the verb directly in the output,
+;  while we need to get a finally rendered form so we can push it out. Hmmm.
 
 (defun say-tense (cd tense inf subj infinitive plural)
   (declare (ignore cd))
   (declare (ignore inf))
   (declare (ignore subj))
-  (let ((tense-forms (get infinitive tense))) ; only irregulars have tense forms
-    (format t " ")
+  (let ((tense-forms (get infinitive tense)) ; only irregulars have tense forms
+        (intermediate "")
+        (suffix ""))
+;    (format t " ")
     (cond (tense-forms
-           (format t "~a " (if plural ; 151016 added space after irregular verbs
+           (add-to-sent
+            (format nil "~a" (if plural ; 151016 added space after irregular verbs
                                           ; this fixed told and struck, broke others?
-                                   (surface-prep (cadr tense-forms))
-                                   (surface-prep (car tense-forms)))))
+                                (surface-prep (cadr tense-forms))
+                                (surface-prep (car tense-forms)))) ))
           (t
-           (format t "~a" (surface-prep infinitive))
+           (setf intermediate (format nil "~a" (surface-prep infinitive)))
            (case tense
              (past
               (if (not (or (equal (lastchar infinitive) #\E)
                            (equal (lastchar infinitive) #\e)))
-                (format t "e"))
-              (format t "d "))
+                  (setf intermediate (concatenate 'string intermediate "e")))
+;                  (format t "e"))
+              (setf intermediate (concatenate 'string intermediate "d")))
+;              (format t "d "))
              (present
               (if (not plural)
-                (format t "s "))))))))
+                  (setf intermediate (concatenate 'string intermediate "s")))))
+;                  (format t "s "))))
+           (add-to-sent intermediate)
+           ))))
 
 ;  lastchar returns that last character in x
 (defun lastchar (x)

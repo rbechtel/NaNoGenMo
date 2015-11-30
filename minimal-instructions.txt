@@ -1,0 +1,15 @@
+; Start Lisp (I'm using LispWorks).
+
+; Move to the directory where you've got the stuff.
+
+(load "load-nngm.lisp")
+(load "extra-stories.lisp") ; because this is last minute
+
+; to generate a chapter out of stories.lisp, e.g., Chapter 1
+
+(spin-episode *story1* nil t t)
+
+; to generate a chapter out of extra-stories.lisp, e.g., Chapter 10
+
+(spin-episode *story10* nil t)
+

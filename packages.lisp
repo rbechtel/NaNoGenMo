@@ -6,14 +6,15 @@
 (in-package "COMMON-LISP-USER")
 
 (defpackage :nngm
-  (:use :common-lisp :cl-user)
-  (:export
-   "MICRO-TALESPIN"
-   "MICRO-TALESPIN-DEMO"
-   "SPIN-TALE"
-   "RECITE"
-   "SAY-IMMEDIATE"
-   "*STORY-SEQUENCE*"))
+  (:use :common-lisp :cl-user))
+; 151108 Man, this package thing is a pain the in the patoot for development/debugging
+;  (:export
+;   "MICRO-TALESPIN"
+;   "MICRO-TALESPIN-DEMO"
+;   "SPIN-TALE"
+;   "RECITE"
+;   "SAY-IMMEDIATE"
+;   "*STORY-SEQUENCE*"))
 
 
 

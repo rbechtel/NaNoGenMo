@@ -29,46 +29,71 @@
 ; All changes by Robert Bechtel for NaNoGenMo 2015 are licensed
 ; under a Creating Commons Attribution-ShareAlike 4.0 International License
 
-(in-package "NNGM")
+; (in-package "NNGM") ; removed for development/debug 151108
 
-(export (list '*STORY1* '*STORY2* '*STORY3* '*STORY4* '*STORY5* '*STORY6* '*STORY7*))
+; (export (list '*STORY1* '*STORY2* '*STORY3* '*STORY4* '*STORY5* '*STORY6* '*STORY7*))
 
-; More Initial Facts
-;  Joe is a bear.
-;  Joe's home is the cave.
-;  Louise is also a bear.
-;  Louise's home is the valley.
-;  Irving is a bird.
-;  Irving's home is a tree.
-;  Bears eat honey, berries, and fish.
-;  Birds eat worms.
-;  Joe, Irving, and Louise are personae (in the theatrical sense).
-;  Hunger and thirst are possible goals.
-;  The cave, the oak tree, the elm tree, the pine-tree, the ground,
-;  the valley, and the river are all locations.
-;  All locations are also objects.
-;  Honey, berries, fish, worms, and water are also objects.
+; Initial Facts
+; The world thinks that Joe is in the cave.
+; Joe thinks that he is in the cave.
+; The world thinks that Irving is in the oak tree.
+; Irving thinks that he is in the oak tree.
+; Joe thinks that Irving is in the oak tree.
+; The world thinks that there is water in the river.
+; Joe thinks that there is water in the river.
+; The world thinks that there is honey in the elm tree.
+; Irving thinks that there is honey in the elm tree.
+; The world thinks that there is a worm in the ground.
+; Joe thinks that there is a worm in the ground.
+; Irving thinks that Joe is in the cave.
+; The world thinks that there are fish in the river.
+; Irving thinks that there are fish in the river.
+;; 151025 additional initial facts - new female character, Louise
+;; The world thinks that Louise is near the valley.
+;; Louise thinks that she is near the valley.
+;; Louise thinks the water is near the river.
+;; Louise thinks Irving is near the oak-tree.
+;; Louise thinks Joe is near the cave.
+;; Louise thinks the worm is near the ground.
+;; The world thinks the berries are near the pine-tree.
+;; Irving thinks the berries are near the pine-tree.
 
-  (put 'joe  'is-a 'bear)
-  (put 'joe 'home 'cave)
-  (put 'joe 'gender 'male) ; 151024 to support pronouns
-  (put 'irving 'is-a 'bird)
-  (put 'irving 'home 'tree)
-  (put 'irving 'gender 'male) ; 151024 to support pronouns
-  (put 'louise 'is-a 'bear)   ; 151025 adding Louise
-  (put 'louise 'home 'valley)
-  (put 'louise 'gender 'female)
-  (put 'bear 'food '(honey berries fish))
-  (put 'bird 'food '(worm))
+(setf *init-facts*
+      '((world (loc (actor joe) (val cave)))
+        (joe (loc (actor joe) (val cave)))
+        (world (loc (actor irving) (val oak-tree)))
+        (irving (loc (actor irving) (val oak-tree)))
+        (joe (loc (actor irving) (val oak-tree)))
+        (world (loc (actor water) (val river)))
+        (joe (loc (actor water) (val river)))
+        (world (loc (actor honey) (val elm-tree)))
+        (irving (loc (actor honey) (val elm-tree)))
+        (world (loc (actor worm) (val ground)))
+        (joe (loc (actor worm) (val ground)))
+        (irving (loc (actor joe) (val cave)))
+        (world (loc (actor fish) (val river)))
+        (irving (loc (actor fish) (val river)))
+        (world (loc (actor louise) (val valley)))
+        (louise (loc (actor louise) (val valley)))
+        (louise (loc (actor water) (val river)))
+        (louise (loc (actor irving) (val oak-tree)))
+        (louise (loc (actor joe) (val cave)))
+        (louise (loc (actor worm) (val ground)))
+        (world (loc (actor berries) (val pine-tree)))
+        (irving (loc (actor berries) (val pine-tree)))))
 
+; 151107: Consider revising these to use the episode and fact structures
+; that are now defined in structures.lisp.
+; Structure access functions should work fine even if this doesn't get
+; updated.
 
 ; Story 1
 ; Synopsis:
 ; No plot: joe gets a drink of water.
 ; Representation:
 ; Joe is thirsty.
-(defvar *story1*
-  '(joe thirsty))
+(defvar *story1*)
+(setf *story1*  '(joe thirsty))
 
 
 ; Story 2
@@ -81,8 +106,9 @@
 ; Irving thinks that Joe deceives him.
 ; Irving thinks that he does not like Joe.
 ; Joe thinks that Irving does not deceive him.
-(defvar *story2*
-  '(irving thirsty
+(defvar *story2*)
+(setf *story2*
+   '(irving thirsty
     (irving (like (actor joe) (to irving) (mode (neg))))
     (irving (dominate (actor joe) (to irving) (mode (neg))))
     (irving (deceive (actor joe) (to irving) (mode (pos))))
@@ -97,7 +123,8 @@
 ; Joe is hungry.
 ; Joe thinks that Irving does not like him.
 ; Joe thinks that Irving dominates him.
-(defvar *story3*
+(defvar *story3*)
+(setf *story3*
   '(joe hungry
     (joe (like (actor irving) (to joe) (mode (neg))))
     (joe (dominate (actor irving) (to joe) (mode (pos))))))
@@ -114,7 +141,8 @@
 ; Irving thinks that he like Joe.
 ; Irving thinks that he does not dominate Joe.
 ; Irving thinks that he does not deceive Joe.
-(defvar *story4*
+(defvar *story4*)
+(setf *story4*
   '(joe hungry
     (world (hungry (actor irving) (mode (pos))))
     (joe (like (actor irving) (to joe) (mode (pos))))
@@ -136,7 +164,8 @@
 ; The world thinks that Joe is hungry.
 ; Joe thinks that he does not like Irving.
 ; Joe thinks that he deceives Irving.
-(defvar *story5*
+(defvar *story5*)
+(setf *story5*
   '(irving thirsty
 ; Irving thinks that there is honey in the elm tree.
 ; The world thinks that there is a worm in the ground.
@@ -160,7 +189,8 @@
 ; Joe is hungry.
 ; Joe thinks that Irving likes him.
 ; Joe thinks that Irving does not dominate him.
-(defvar *story6*
+(defvar *story6*)
+(setf *story6*
   '(joe hungry
     (joe (like (actor irving) (to joe) (mode (pos))))
     (joe (dominate (actor irving) (to joe) (mode (neg))))))
@@ -172,9 +202,28 @@
 ; She likes Joe, and thinks Joe likes her.
 ; She doesn't like Irving, but thinks that she dominates him.
 
-(defvar *story7*
+(defvar *story7*)
+(setf *story7*
   '(louise hungry
            (louise (like (actor louise) (to joe) (mode (pos))))
            (louise (like (actor joe) (to louise) (mode (pos))))
            (louise (like (actor louise) (to irving) (mode (neg))))
            (louise (dominate (actor louise) (to irving) (mode (pos))))))
+
+; Story 8. Try to have a character with multiple goals
+; Synopsis: Don't know yet!
+; Representation:
+; Joe is thirsty and Joe is hungry.
+(defvar *story8*)
+(setf *story8*
+  '(((joe thirsty) (joe hungry))))
+
+; Story 9. Try to have multiple characters with goals
+; Synopsis: Don't know yet!
+; Representation:
+; Joe is thirsty and Louise is hungry.
+(defvar *story9*)
+(setf *story9*
+  '(((joe thirsty) (louise hungry))))
+
+
